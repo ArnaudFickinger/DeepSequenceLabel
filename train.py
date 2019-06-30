@@ -30,13 +30,16 @@ opt = Options().parse()
 
 str_vae = "svae"
 
-def main(): #we can seprate disease at the beg
+def main():
 
-    unlabeled_mutations, labeled_mutations, labels, healthy_seq, seqlen = get_label(opt.gene)
-
+    unlabeled_mutations, labeled_mutations, labels, healthy_seq = get_label(opt.gene)
+    seqlen = len(healthy_seq)
+    nb_features = labels.shape[1]
+    nb_disease = 1
+    alphabet_size = 20
 
     model = M2_VAE(opt.latent_dim, seqlen,
-                              opt.alphabet_size, opt.enc_h1_dim, opt.enc_h2_dim, opt.dec_h1_dim, opt.dec_h2_dim, opt.alphabet_size, opt.query_dim, opt.interaction_inner_dim, opt.dropout_att, opt.mu_sparse, opt.logsigma_sparse, opt.cw_inner_dimension, opt.nb_patterns,
+                              alphabet_size, opt.enc_h1_dim, opt.enc_h2_dim, opt.dec_h1_dim, opt.dec_h2_dim, nb_disease, nb_features, opt.dim_h1_clas, opt.dim_h2_clas, opt.mu_sparse, opt.logsigma_sparse, opt.cw_inner_dimension, opt.nb_patterns,
                               opt.has_temperature, opt.has_dictionary).to(device)
 
     u_seq = get_seq(unlabeled_mutations, healthy_seq)
@@ -70,7 +73,6 @@ def main(): #we can seprate disease at the beg
         l_loss.append(loss_labeled.item())
         clas_loss.append(classification_loss(l_labels, logqy_x))
         kld_l = kld_latent_theano(mu_qz_xy, ls_qz_xy).mean().item()
-
 
         # unlabeled mutations
         mu_qz_xy, ls_qz_xy, px_zy, logpx_zy, mu_W1, logsigma_W1, mu_b1, logsigma_b1, mu_W2, logsigma_W2, mu_b2, logsigma_b2, mu_W3, logsigma_W3, mu_b3, logsigma_b3, mu_S, logsigma_S, mu_C, logsigma_C, mu_l, logsigma_l, qy_x, logqy_x = model(u_batch)

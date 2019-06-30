@@ -42,23 +42,90 @@ def log_gaussian_logsigma(x, mu, logsigma):
 
 def get_label(gene):
 
-    healthy_seq = "" #TODO
-
     print("Gene: {}".format(gene))
-    page = requests.get("https://www.alzforum.org/mutations/{}".format(gene))
-    soup = BeautifulSoup(page.content, 'html.parser')
+    page1 = requests.get("https://www.alzforum.org/mutations/{}".format(gene))
+    soup1 = BeautifulSoup(page1.content, 'html.parser')
 
-    mutations = soup.find_all('th', {"data-title": "Mutation"})
+    mutations = soup1.find_all('th', {"data-title": "Mutation"})
     mutations = [item.get_text() for item in mutations]
+
+    pathogenicity = soup1.find_all('td', {"data-title": "Pathogenicity"})
+    pathogenicity = [item.get_text().replace(' ', '').split(',') for item in pathogenicity]
+    pathogenicity = [[disease.split(':') for disease in mutation] for mutation in pathogenicity]
 
     print("Number of mutations: {}".format(len(mutations)))
 
-    pathogenicity = soup.find_all('td', {"data-title": "Pathogenicity"})
-    pathogenicity = [item.get_text().replace(' ', '').split(',') for item in pathogenicity]
-    # pathogenicity = [item.replace(' ', '') for item in pathogenicity]
-    # # print(pathogenicity)
-    # pathogenicity = [item.split(',') for item in pathogenicity]
-    pathogenicity = [[disease.split(':') for disease in mutation] for mutation in pathogenicity]
+    valid_idx = []
+
+    for idx, mutation in enumerate(mutations):
+        if '+' in mutation or '-' in mutation or '.' in mutation or 'del' in mutation or '*' in mutation:
+            continue
+        elif '(' in mutation:
+            mutations[idx] = mutation.split('(')[0]
+            valid_idx.append(idx)
+        else:
+            valid_idx.append(idx)
+
+    mutations = [mutations[i] for i in valid_idx]
+    pathogenicity = [pathogenicity[i] for i in valid_idx]
+
+    print("Number of substitutions: {}".format(len(mutations)))
+
+    page2 = requests.get("https://www.uniprot.org/uniprot/?query={}&sort=score".format(gene))
+    soup2 = BeautifulSoup(page2.content, 'html.parser')
+
+    code = soup2.find("td", {"class" : "entryID"}).get_text()
+
+    page3 = requests.get("https://www.uniprot.org/uniprot/{}".format(code))
+    soup3 = BeautifulSoup(page3.content, 'html.parser')
+
+    isoforms = [isoform_code.get_text() for isoform_code in (isoforms.find('strong') for isoforms in soup3.findAll('div', {"class":"sequence-isoform"})) if isoform_code]
+
+    print("Number of isoforms: {}".format(len(isoforms)))
+
+    seqs = []
+
+    for isoform_code in isoforms:
+        page = requests.get("https://www.uniprot.org/blast/?about={}".format(isoform_code))
+        soup = BeautifulSoup(page.content, 'html.parser')
+        seq = soup.find(id = "blastQuery").get_text()
+        seqs.append(''.join(seq.split('\n')[1:-1]))
+
+    nb_error = []
+
+    for isoform in seqs:
+        errors = 0
+        for mutation in mutations:
+            if int(mutation[1:-1])>len(isoform) or isoform[int(mutation[1:-1])-1] != mutation[0]:
+                errors+=1
+        nb_error.append(errors)
+
+    min_idx = 0
+    min_error = nb_error[0]
+
+    for i, error in enumerate(nb_error[1:]):
+        if min_error>error:
+            min_idx = i+1
+            min_error = error
+
+    healthy_seq = seqs[min_idx]
+
+    print("Isoform that fit the best the data: {}".format(isoforms[min_idx]))
+
+    valid_idx = []
+
+    for idx, mutation in enumerate(mutations):
+        if int(mutation[1:-1]) > len(healthy_seq) or healthy_seq[int(mutation[1:-1]) - 1] != mutation[0]:
+            continue
+        else:
+            valid_idx.append(idx)
+
+    print("Number of valid substitutions for this isoform: {}".format(len(valid_idx)))
+
+    mutations = [mutations[i] for i in valid_idx]
+
+    pathogenicity = [pathogenicity[i] for i in valid_idx]
+
     diseases = {}
     occ_diseases = {}
     features = {}
@@ -91,7 +158,7 @@ def get_label(gene):
     for i, mutation in enumerate(pathogenicity):
         unlabelled = True
         for disease in mutation:
-            if disease[0] == max_rep_disease:  # labeled
+            if disease[0] == max_rep_disease:
                 unlabelled = False
                 max_labels[i][features[disease[1]]] = 1
                 labeled_mutations.append(mutations[i])
@@ -110,7 +177,7 @@ def get_seq(mutations_list, healthy_seq):
         mut = mutation[-1]
         pos = int(mutation[1:-1])
         new_seq = healthy_seq[:]
-        new_seq[pos] = mut
+        new_seq[pos-1] = mut
         seq_list.append(new_seq)
     return seq_list
 
@@ -907,3 +974,5 @@ def gen_job_string(data_params, model_params):
 
 
     return job_str+"_"+"_".join(job_id_list)
+
+get_label("mapt")

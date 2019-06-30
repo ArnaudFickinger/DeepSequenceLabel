@@ -16,6 +16,12 @@ class Options():
 
     def initialize(self):
 
+        #Mutation parameter
+        self.parser.add_argument('--gene', type=str, default="mapt")
+
+        #Classifier
+        self.parser.add_argument('--dim_h1_clas', type=int, default=300)
+        self.parser.add_argument('--dim_h2_clas', type=int, default=100)
 
         #Training parameter
         self.parser.add_argument('--is_train', dest='is_train', action='store_true', default=True)
