@@ -13,6 +13,15 @@ from loss import *
 from bs4 import BeautifulSoup
 import requests
 import numpy as np
+from sklearn.decomposition import PCA
+
+# do a pca for latent space on labelled test dataset:
+# pca = PCA(n_components=2)
+# principalComponents = pca.fit_transform(x)
+# Parameters:
+# X : array-like, shape (n_samples, n_features)
+# Returns:
+# X_new : array-like, shape (n_samples, n_components)
 
 from options import Options
 
@@ -40,8 +49,42 @@ def log_gaussian_logvar(x, mu, logvar):
 def log_gaussian_logsigma(x, mu, logsigma):
     return float(-0.5 * np.log(2 * np.pi)) - logsigma - (x - mu).pow(2) / torch.exp(logsigma)
 
-def get_label(gene):
+def embeed_feature(feature):
+    if feature == 'NotPathogenic':
+        return 'NotPathogenic'
+    elif feature == 'UnclearPathogenicity':
+        return None
+    else:
+        return 'Pathogenic'
 
+def preprocess_data(gene, data_format, datahelper):
+    if data_format == "alz":
+        mutations, features, pathogenicity, max_rep_disease, healthy_seq = preprocess_get_label(gene)
+        return {"mutations": mutations, "features": features, "pathogenicity": pathogenicity, "max_rep_disease": max_rep_disease, "healthy_seq": healthy_seq, "healthy_one_hot": get_one_hot([[healthy_seq[ix] for ix in datahelper.focus_index]])}
+    else:
+        healthy_seq = "MDLSALRVEEVQNVINAMQKILECPICLELIKEPVSTKCDHIFCKFCMLKLLNQKKGPSQCPLCKNDITKRSLQESTRFSQLVEELLKIICAFQLDTGLEYANSYNFAKKENNSPEHLKDEVSIIQSMGYRNRAKRLLQSEPENPSLQETSLSVQLSNLGTVRTLRTKQRIQPQKTSVYIELGSDSSEDTVNKATYCSVG"
+        return {"healthy_seq": healthy_seq, "healthy_one_hot": get_one_hot([[healthy_seq[ix] for ix in datahelper.focus_index]]),
+                "npath_mutations": ['K45Q', 'D67Y'], "path_mutations": ['L22S', 'T37K', 'C39R', 'H41R', 'C44S', 'C44Y'], "very_path_mutations":['C61G'] }
+
+
+def get_clinical_data_decomposition(pre_process_data, data_format, datahelper, nb_path_training_point, nb_npath_training_point):
+    if data_format == "alz":
+        all, unlabeled, labeled, labels, test, test_labels, npath_test, path_test, npath_train, path_train = get_label(pre_process_data["mutations"], pre_process_data["features"], pre_process_data["pathogenicity"], pre_process_data["max_rep_disease"], datahelper.defocus_index, nb_path_training_point, nb_npath_training_point)
+        return {"all": all, "unlabeled": unlabeled, "labeled": labeled, "labels": labels, "test" : test, "test_labels": test_labels, "npath_test": npath_test, "path_test" : path_test, "npath_train" : npath_train, "path_train" : path_train}
+    else:
+        npath_train = pre_process_data["npath_mutations"][:nb_npath_training_point]
+        path_train = pre_process_data["path_mutations"][:nb_path_training_point]
+        all_lab_train_seq = npath_train + path_train
+        train_labels = np.array([[0,1]for i in range(nb_npath_training_point)]+[[1,0]for i in range(nb_path_training_point)])
+        npath_test_mut = pre_process_data["npath_mutations"][nb_npath_training_point:]
+        path_test_mut = pre_process_data["path_mutations"][nb_path_training_point:]
+        all_lab_test_seq = npath_test_mut + path_test_mut
+        test_labels = np.array([[0,1]for i in range(len(pre_process_data["npath_mutations"])-nb_npath_training_point)]+[[1,0]for i in range(len(pre_process_data["path_mutations"])-nb_path_training_point)])
+        return {"all": all_lab_train_seq, "unlabeled": [], "labeled": all_lab_train_seq, "labels": train_labels, "test": all_lab_test_seq,
+                "test_labels": test_labels, "npath_test": npath_test_mut, "path_test": path_test_mut,
+                "npath_train": npath_train, "path_train": path_train}
+
+def preprocess_get_label(gene):
     print("Gene: {}".format(gene))
     page1 = requests.get("https://www.alzforum.org/mutations/{}".format(gene))
     soup1 = BeautifulSoup(page1.content, 'html.parser')
@@ -74,12 +117,14 @@ def get_label(gene):
     page2 = requests.get("https://www.uniprot.org/uniprot/?query={}&sort=score".format(gene))
     soup2 = BeautifulSoup(page2.content, 'html.parser')
 
-    code = soup2.find("td", {"class" : "entryID"}).get_text()
+    code = soup2.find("td", {"class": "entryID"}).get_text()
 
     page3 = requests.get("https://www.uniprot.org/uniprot/{}".format(code))
     soup3 = BeautifulSoup(page3.content, 'html.parser')
 
-    isoforms = [isoform_code.get_text() for isoform_code in (isoforms.find('strong') for isoforms in soup3.findAll('div', {"class":"sequence-isoform"})) if isoform_code]
+    isoforms = [isoform_code.get_text() for isoform_code in
+                (isoforms.find('strong') for isoforms in soup3.findAll('div', {"class": "sequence-isoform"})) if
+                isoform_code]
 
     print("Number of isoforms: {}".format(len(isoforms)))
 
@@ -88,7 +133,7 @@ def get_label(gene):
     for isoform_code in isoforms:
         page = requests.get("https://www.uniprot.org/blast/?about={}".format(isoform_code))
         soup = BeautifulSoup(page.content, 'html.parser')
-        seq = soup.find(id = "blastQuery").get_text()
+        seq = soup.find(id="blastQuery").get_text()
         seqs.append(''.join(seq.split('\n')[1:-1]))
 
     nb_error = []
@@ -96,16 +141,16 @@ def get_label(gene):
     for isoform in seqs:
         errors = 0
         for mutation in mutations:
-            if int(mutation[1:-1])>len(isoform) or isoform[int(mutation[1:-1])-1] != mutation[0]:
-                errors+=1
+            if int(mutation[1:-1]) > len(isoform) or isoform[int(mutation[1:-1]) - 1] != mutation[0]:
+                errors += 1
         nb_error.append(errors)
 
     min_idx = 0
     min_error = nb_error[0]
 
     for i, error in enumerate(nb_error[1:]):
-        if min_error>error:
-            min_idx = i+1
+        if min_error > error:
+            min_idx = i + 1
             min_error = error
 
     healthy_seq = seqs[min_idx]
@@ -124,20 +169,25 @@ def get_label(gene):
 
     mutations = [mutations[i] for i in valid_idx]
 
+    mutation_index = [mutation[1:-1] for mutation in mutations]
+    # print(mutation_index)
+
     pathogenicity = [pathogenicity[i] for i in valid_idx]
 
     diseases = {}
     occ_diseases = {}
-    features = {}
+
+    features_2 = {}
+    features_2['Pathogenic'] = 0
+    features_2['NotPathogenic'] = 1
+
     for mutation in pathogenicity:
         for disease in mutation:
             if disease[0] not in diseases:
                 diseases[disease[0]] = len(diseases)
-                occ_diseases[disease[0]] = 0
+                occ_diseases[disease[0]] = 1
             else:
                 occ_diseases[disease[0]] += 1
-            if disease[1] not in features:
-                features[disease[1]] = len(features)
 
     init = False
 
@@ -150,43 +200,263 @@ def get_label(gene):
 
     print("Most frequent disease: {}".format(max_rep_disease))
 
-    labeled_mutations = []
-    labels = []
-    unlabeled_mutations = []
+    return mutations, features_2, pathogenicity, max_rep_disease, healthy_seq
 
-    max_labels = np.zeros((len(mutations), len(features)))
+def get_label(mutations, features_2, pathogenicity, max_rep_disease, defocus_index, nb_train_path = -1, nb_npath_train = -1, most_frequent = True, nb_test = 5, all_diseases = False):
+
+    labeled_mutations_2_features = []
+    unlabeled_mutations_2_features = []
+    all_mutations = []
+
+    path_test_mut = []
+    npath_test_mut = []
+
+    features_freq = {}
+
+    max_labels_2_features = np.zeros((len(mutations)-2*nb_test, len(features_2)))
+    index_labelled_mut_2_features = []
+    path_train = []
+    npath_train = []
+    test_labels_2_features = np.zeros((2 * nb_test, len(features_2)))
+    test_mutation = []
+    current_test_mut_index = 0
+    count_path_test = 0
+    count_npath_test = 0
+    count_path_train = 0
+    count_npath_train = 0
+    rejected = 0
+    # print(defocus_index)
+
+
     for i, mutation in enumerate(pathogenicity):
+        # print(mutations[i][1:-1])
+        # print(int(mutations[i][1:-1]) not in defocus_index)
         unlabelled = True
+        test = False
+        rejected_bool = False
         for disease in mutation:
             if disease[0] == max_rep_disease:
                 unlabelled = False
-                max_labels[i][features[disease[1]]] = 1
-                labeled_mutations.append(mutations[i])
-                labels.append(max_labels[i])
+                if disease[1] not in features_freq:
+                    features_freq[disease[1]] = 0
+                features_freq[disease[1]] += 1
+                if count_npath_test<nb_test and disease[1] == 'NotPathogenic' and int(mutations[i][1:-1]) not in defocus_index:
+                    test = True
+                    test_mutation.append(mutations[i])
+                    npath_test_mut.append(mutations[i])
+                    test_labels_2_features[current_test_mut_index][features_2[disease[1]]] = 1
+                    count_npath_test +=1
+                    current_test_mut_index +=1
+                elif count_path_test<nb_test and disease[1] == 'Pathogenic' and int(mutations[i][1:-1]) not in defocus_index:
+                    test = True
+                    test_mutation.append(mutations[i])
+                    path_test_mut.append(mutations[i])
+                    test_labels_2_features[current_test_mut_index][features_2[disease[1]]] = 1
+                    count_path_test += 1
+                    current_test_mut_index+=1
+                else:
+                    if disease[1] == 'UnclearPathogenicity':
+                        unlabelled = True
+                        # unlabeled_mutations_2_features.append(mutations[i])
+                    elif int(mutations[i][1:-1]) not in defocus_index:
+
+                        if embeed_feature(disease[1]) == 'Pathogenic' and (nb_train_path == -1 or count_path_train<nb_train_path):
+                            labeled_mutations_2_features.append(mutations[i])
+                            max_labels_2_features[i - current_test_mut_index][
+                                features_2[embeed_feature(disease[1])]] = 1
+                            index_labelled_mut_2_features.append(i - current_test_mut_index)
+                            path_train.append(mutations[i])
+                            count_path_train+=1
+                        elif embeed_feature(disease[1]) == 'NotPathogenic' and (nb_npath_train == -1 or count_npath_train<nb_npath_train):
+                            labeled_mutations_2_features.append(mutations[i])
+                            max_labels_2_features[i - current_test_mut_index][
+                                features_2[embeed_feature(disease[1])]] = 1
+                            index_labelled_mut_2_features.append(i - current_test_mut_index)
+                            npath_train.append(mutations[i])
+                            count_npath_train+=1
+                    else:
+                        rejected_bool = True
+                        rejected+=1
+                break
+
+
+        if unlabelled:
+            unlabeled_mutations_2_features.append(mutations[i])
+        if not test and not rejected_bool:
+            all_mutations.append(mutations[i])
+    # print("rejected:{}".format(rejected))
+
+    # print("Number of labeled mutations: {}".format(len(labeled_mutations)))
+
+    return all_mutations, unlabeled_mutations_2_features, labeled_mutations_2_features, max_labels_2_features[index_labelled_mut_2_features], test_mutation, test_labels_2_features, npath_test_mut, path_test_mut, npath_train, path_train
+
+
+def get_label_old(mutations, features, features_2, pathogenicity, max_rep_disease, healthy_seq, defocus_index, nb_train_path = -1, nb_npath_train = -1, most_frequent = True, nb_test = 5, all_diseases = False):
+
+    labeled_mutations = []
+    labeled_mutations_2_features = []
+    unlabeled_mutations = []
+    unlabeled_mutations_2_features = []
+    all_mutations = []
+
+    path_test_mut = []
+    npath_test_mut = []
+
+    features_freq = {}
+
+    max_labels = np.zeros((len(mutations)-2*nb_test, len(features)))
+    max_labels_2_features = np.zeros((len(mutations)-2*nb_test, len(features_2)))
+    index_labelled_mut = []
+    index_labelled_mut_2_features = []
+    path_train = []
+    npath_train = []
+    test_labels = np.zeros((2*nb_test, len(features)))
+    test_labels_2_features = np.zeros((2 * nb_test, len(features_2)))
+    test_mutation = []
+    current_test_mut_index = 0
+    count_path_test = 0
+    count_npath_test = 0
+    count_path_train = 0
+    count_npath_train = 0
+    rejected = 0
+    # print(defocus_index)
+
+
+    for i, mutation in enumerate(pathogenicity):
+        # print(mutations[i][1:-1])
+        # print(int(mutations[i][1:-1]) not in defocus_index)
+        unlabelled = True
+        test = False
+        rejected_bool = False
+        for disease in mutation:
+            if disease[0] == max_rep_disease:
+                unlabelled = False
+                if disease[1] not in features_freq:
+                    features_freq[disease[1]] = 0
+                features_freq[disease[1]] += 1
+                if count_npath_test<nb_test and disease[1] == 'NotPathogenic' and int(mutations[i][1:-1]) not in defocus_index:
+                    test = True
+                    test_mutation.append(mutations[i])
+                    npath_test_mut.append(mutations[i])
+                    test_labels[current_test_mut_index][features[disease[1]]] = 1
+                    test_labels_2_features[current_test_mut_index][features_2[disease[1]]] = 1
+                    count_npath_test +=1
+                    current_test_mut_index +=1
+                elif count_path_test<nb_test and disease[1] == 'Pathogenic' and int(mutations[i][1:-1]) not in defocus_index:
+                    test = True
+                    test_mutation.append(mutations[i])
+                    path_test_mut.append(mutations[i])
+                    test_labels[current_test_mut_index][features[disease[1]]] = 1
+                    test_labels_2_features[current_test_mut_index][features_2[disease[1]]] = 1
+                    count_path_test += 1
+                    current_test_mut_index+=1
+                else:
+                    max_labels[i-current_test_mut_index][features[disease[1]]] = 1
+                    labeled_mutations.append(mutations[i])
+                    index_labelled_mut.append(i-current_test_mut_index)
+                    if disease[1] == 'UnclearPathogenicity':
+                        unlabelled = True
+                        # unlabeled_mutations_2_features.append(mutations[i])
+                    elif int(mutations[i][1:-1]) not in defocus_index:
+
+                        if embeed_feature(disease[1]) == 'Pathogenic' and (nb_train_path == -1 or count_path_train<nb_train_path):
+                            labeled_mutations_2_features.append(mutations[i])
+                            max_labels_2_features[i - current_test_mut_index][
+                                features_2[embeed_feature(disease[1])]] = 1
+                            index_labelled_mut_2_features.append(i - current_test_mut_index)
+                            path_train.append(mutations[i])
+                            count_path_train+=1
+                        elif embeed_feature(disease[1]) == 'NotPathogenic' and (nb_npath_train == -1 or count_npath_train<nb_npath_train):
+                            labeled_mutations_2_features.append(mutations[i])
+                            max_labels_2_features[i - current_test_mut_index][
+                                features_2[embeed_feature(disease[1])]] = 1
+                            index_labelled_mut_2_features.append(i - current_test_mut_index)
+                            npath_train.append(mutations[i])
+                            count_npath_train+=1
+                    else:
+                        rejected_bool = True
+                        rejected+=1
+                break
+
+
         if unlabelled:
             unlabeled_mutations.append(mutations[i])
+            unlabeled_mutations_2_features.append(mutations[i])
+        if not test and not rejected_bool:
+            all_mutations.append(mutations[i])
+    # print("rejected:{}".format(rejected))
 
-    print("Number of labeled mutations: {}".format(len(labeled_mutations)))
+    # print("Number of labeled mutations: {}".format(len(labeled_mutations)))
 
-    return unlabeled_mutations, labeled_mutations, labels, healthy_seq
+    return all_mutations, unlabeled_mutations, labeled_mutations, max_labels[index_labelled_mut], unlabeled_mutations_2_features, labeled_mutations_2_features, max_labels_2_features[index_labelled_mut_2_features], healthy_seq, test_mutation, test_labels, test_labels_2_features, npath_test_mut, path_test_mut, npath_train, path_train, features, features_2
 
-def get_seq(mutations_list, healthy_seq):
+# def get_seq(mutations_list, healthy_seq, focus_index = None, defocus_index = None):
+#     seq_list = []
+#     # labels_to_keep = []
+#     for i, mutation in enumerate(mutations_list):
+#         # original = mutation[0] #to check
+#         mut = mutation[-1]
+#         pos = int(mutation[1:-1])
+#         # if defocus_index is not None:
+#         #     if pos in defocus_index:
+#         #         continue
+#         #     else:
+#         #         labels_to_keep.append(i)
+#         # labels_to_keep.append(i)
+#         if pos == 1:
+#             new_seq = mut + healthy_seq[1:]
+#         elif pos == len(healthy_seq):
+#             new_seq = healthy_seq[:-1] + mut
+#         else:
+#             new_seq = healthy_seq[:pos-1]+mut+healthy_seq[pos:]
+#         if focus_index is not None:
+#             new_seq = [new_seq[ix] for ix in focus_index]
+#         seq_list.append(new_seq)
+#     # if defocus_index is None:
+#     return seq_list
+#     # else:
+#     #     return seq_list, labels_to_keep
+
+
+
+def KLD(mu, log_sigma, prior_mu, prior_log_sigma):
+    return prior_log_sigma - log_sigma + 0.5 * (math.exp(2. * log_sigma) + (mu - prior_mu) ** 2) * math.exp(
+        -2. * prior_log_sigma) - 0.5
+
+def JSD(mu1, log_sigma1, mu2, log_sigma2):
+    return 0.5*(KLD(mu1, log_sigma1, mu2, log_sigma2)+KLD(mu2, log_sigma2, mu1, log_sigma1))
+
+
+def get_seq(mutations_list, healthy_seq, focus_index = None, defocus_index = None, data_format = "manual"):
     seq_list = []
-    for mutation in mutations_list:
+    # labels_to_keep = []
+    for i, mutation in enumerate(mutations_list):
         # original = mutation[0] #to check
         mut = mutation[-1]
         pos = int(mutation[1:-1])
-        new_seq = healthy_seq[:]
-        new_seq[pos-1] = mut
+        if data_format == "manual" and defocus_index is not None:
+            if pos in defocus_index:
+                continue
+        if pos == 1:
+            new_seq = mut + healthy_seq[1:]
+        elif pos == len(healthy_seq):
+            new_seq = healthy_seq[:-1] + mut
+        else:
+            new_seq = healthy_seq[:pos-1]+mut+healthy_seq[pos:]
+        if focus_index is not None:
+            new_seq = [new_seq[ix] for ix in focus_index]
         seq_list.append(new_seq)
+    # if defocus_index is None:
     return seq_list
+    # else:
+    #     return seq_list, labels_to_keep
 
 def get_one_hot(seq_list):
     alphabet = "ACDEFGHIKLMNPQRSTVWY"
     aa_dict = {}
     for i, aa in enumerate(alphabet):
         aa_dict[aa] = i
-    one_hot = np.zeros(len(seq_list), len(seq_list[0]), len(alphabet))
+    one_hot = np.zeros((len(seq_list), len(seq_list[0]), len(alphabet)))
     for i, seq in enumerate(seq_list):
         for j, letter in enumerate(seq):
             if letter in aa_dict:
@@ -198,7 +468,7 @@ def create_labels(batch, nb_label):
     labels = torch.zeros(batch.shape[0]*nb_label, nb_label)
     for i in range(nb_label):
         for j in range(batch.shape[0]):
-            labels[j+i][i] = 1
+            labels[j+batch.shape[0]*i][i] = 1
     return labels
 
 def log_standard_categorical(p):
@@ -216,11 +486,85 @@ def log_standard_categorical(p):
 
     return cross_entropy
 
+def pred_from_onehot(onehot, healthy_seq_one_hot, model, alphabet_size, sequence_len, semi_supervised = False, N_pred_iterations=500, minibatch_size=2000, filename_prefix="", offset=0):
+
+    prediction_matrix = np.zeros((onehot.shape[0], N_pred_iterations))
+
+    batch_order = np.arange(onehot.shape[0])
+
+    healthy_pred = []
+
+    for i in range(N_pred_iterations):
+
+        np.random.shuffle(batch_order)
+
+        for j in range(0, onehot.shape[0], minibatch_size):
+            #                 print(j)
+
+            batch_index = batch_order[j:j + minibatch_size]
+
+            #                 print(self.mutant_sequences_one_hot[batch_index].shape)
+
+            batch = onehot[batch_index]
+
+            batch = batch.reshape(-1, alphabet_size * sequence_len)
+
+            # print(batch.shape)
+
+            batch = torch.Tensor(batch).to(device)
+
+            if semi_supervised:
+                mu, logsigma, px_zy, logpx_zy, qy_x, logqy_x, y = model(batch)[:7]
+                batch_preds = unlabelled_mut_loss_no_mean(logpx_zy, mu, logsigma, qy_x, logqy_x, y)
+                #                 print(batch_preds)
+
+                mu, logsigma, px_zy, logpx_zy, qy_x, logqy_x, y = model((torch.Tensor(healthy_seq_one_hot)).to(device))[:7]
+
+                healthy_pred.append(unlabelled_mut_loss_no_mean(logpx_zy, mu, logsigma, qy_x, logqy_x, y).item())
+
+                batch_preds_numpy = batch_preds.cpu().numpy()
+
+            else:
+                mu, logsigma, _, logpx_z, z = model(batch)[0:5]
+
+                batch_preds = ELBO_no_mean(logpx_z, mu, logsigma, z, 1.0)
+                #                 print(batch_preds)
+
+
+
+                mu, logsigma, _, logpx_z, z = model((torch.Tensor(healthy_seq_one_hot)).to(device))[0:5]
+
+                healthy_pred.append(ELBO_no_mean(logpx_z, mu, logsigma, z, 1.0).item())
+
+                batch_preds_numpy = batch_preds.cpu().numpy()
+
+            #                 print(batch_index.shape)
+
+            for k, idx_batch in enumerate(batch_index.tolist()):
+                prediction_matrix[idx_batch][i] = batch_preds_numpy[k]
+
+
+
+    # Then take the mean of all my elbo samples
+    mean_elbos = np.mean(prediction_matrix, axis=1)
+    # print(mean_elbos.shape)
+    # print(mean_elbos[0])
+
+    wt_elbo = np.mean(healthy_pred)
+    # print(wt_elbo)
+
+    delta_elbos = mean_elbos - wt_elbo
+    # print(delta_elbos.shape)
+    # print(delta_elbos[0])
+
+    return delta_elbos
+
 class DataHelper:
     def __init__(self,
         dataset,
         theta,
         alignment_file="",
+        custom_dataset = False,
         focus_seq_name="",
         calc_weights=True,
         working_dir=".",
@@ -280,7 +624,10 @@ class DataHelper:
         self.load_all_sequences = load_all_sequences
 
         # Load necessary information for preloaded datasets
-        if self.dataset != "":
+        if custom_dataset:
+            self.alignment_file = dataset
+
+        elif self.dataset != "":
             self.configure_datasets()
 
         # Load up the alphabet type to use, whether that be DNA, RNA, or protein
@@ -375,6 +722,8 @@ class DataHelper:
         # Select focus columns
         #  These columns are the uppercase residues of the .a2m file
         self.focus_seq = self.seq_name_to_sequence[self.focus_seq_name]
+        self.focus_index = [ix for ix, s in enumerate(self.focus_seq) if s == s.upper()]
+        self.defocus_index = [ix for ix, s in enumerate(self.focus_seq) if s != s.upper()]
         self.focus_cols = [ix for ix, s in enumerate(self.focus_seq) if s == s.upper()]
         self.focus_seq_trimmed = [self.focus_seq[ix] for ix in self.focus_cols]
         self.seq_len = len(self.focus_cols)
@@ -840,6 +1189,68 @@ class DataHelper:
 
             return self.mutant_sequences_descriptor, self.delta_elbos
 
+
+    def pred_from_onehot(self, onehot, healthy_seq_one_hot, model, N_pred_iterations=10, minibatch_size=2000, filename_prefix="", offset=0):
+
+        prediction_matrix = np.zeros((onehot.shape[0], N_pred_iterations))
+
+        batch_order = np.arange(onehot.shape[0])
+
+        healthy_pred = []
+
+        for i in range(N_pred_iterations):
+
+            np.random.shuffle(batch_order)
+
+            for j in range(0, onehot.shape[0], minibatch_size):
+                #                 print(j)
+
+                batch_index = batch_order[j:j + minibatch_size]
+
+                #                 print(self.mutant_sequences_one_hot[batch_index].shape)
+
+                batch = onehot[batch_index]
+
+                batch = batch.reshape(-1, self.alphabet_size * self.seq_len)
+
+                # print(batch.shape)
+
+                batch = torch.Tensor(batch).to(device)
+
+                mu, logsigma, _, logpx_z, z = model(batch)[0:5]
+
+                batch_preds = ELBO_no_mean(logpx_z, mu, logsigma, z, 1.0)
+                #                 print(batch_preds)
+
+                mu, logsigma, _, logpx_z, z = model(healthy_seq_one_hot)[0:5]
+
+                healthy_pred.append(ELBO_no_mean(logpx_z, mu, logsigma, z, 1.0).item())
+
+                batch_preds_numpy = batch_preds.cpu().numpy()
+
+                #                 print(batch_index.shape)
+
+                for k, idx_batch in enumerate(batch_index.tolist()):
+                    prediction_matrix[idx_batch][i] = batch_preds_numpy[k]
+
+
+
+        # Then take the mean of all my elbo samples
+        mean_elbos = np.mean(prediction_matrix, axis=1)
+        # print(mean_elbos.shape)
+        # print(mean_elbos[0])
+
+        wt_elbo = np.mean(healthy_pred)
+        # print(wt_elbo)
+
+        delta_elbos = mean_elbos - wt_elbo
+        # print(delta_elbos.shape)
+        # print(delta_elbos[0])
+
+        return delta_elbos
+
+
+
     def get_pattern_activations(self, model, update_num, filename_prefix="",
                         verbose=False, minibatch_size=2000):
 
@@ -974,5 +1385,3 @@ def gen_job_string(data_params, model_params):
 
 
     return job_str+"_"+"_".join(job_id_list)
-
-get_label("mapt")

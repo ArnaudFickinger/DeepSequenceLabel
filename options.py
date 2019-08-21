@@ -15,6 +15,10 @@ class Options():
         self.initialized = False
 
     def initialize(self):
+        self.parser.add_argument('--test_algo', dest='test_algo', action='store_true', default=False)
+        self.parser.add_argument('--train_unsup', action='store_true', default=True)
+        self.parser.add_argument('--compare_ss', action='store_true', default=True)
+
 
         #Mutation parameter
         self.parser.add_argument('--gene', type=str, default="mapt")
@@ -23,8 +27,15 @@ class Options():
         self.parser.add_argument('--dim_h1_clas', type=int, default=300)
         self.parser.add_argument('--dim_h2_clas', type=int, default=100)
 
+        #Latent space parameters
+        self.parser.add_argument('--latent_dim_M1', type=int, default=30, help='dimension of the latent space')
+        self.parser.add_argument('--latent_dim_M2', type=int, default=25, help='dimension of the latent space')
+
         #Training parameter
         self.parser.add_argument('--is_train', dest='is_train', action='store_true', default=True)
+        self.parser.add_argument('--stochastic_weigths', dest='stochastic_weigths', action='store_true', default=True)
+        self.parser.add_argument('--plot_loss', dest='plot_loss', action='store_true', default=True)
+        self.parser.add_argument('--test_every', type=int, default=10)
 
         #Pytorch parameters
         self.parser.add_argument('--random_seed', type=int, default=42)
@@ -37,6 +48,7 @@ class Options():
         self.parser.add_argument('--batch_size', type=int, default=100)
         self.parser.add_argument('--lr', type=float, default=1e-3)
         self.parser.add_argument('--epochs', type=int, default=100)
+        self.parser.add_argument('--epochs_pretrain', type=int, default=100)
         self.parser.add_argument('--neff', type=float, default = 0)#535.5874
         self.parser.add_argument('--theano_test', dest='theano_test', action='store_true', default=False)
         self.parser.add_argument('--dropout', type=float, default=0)
@@ -49,7 +61,7 @@ class Options():
         self.parser.add_argument('--sequence_length', type=int, default=84, help='length of the sequence') #253
 
         #Parameters of the VAE
-        self.parser.add_argument('--latent_dim', type=int, default=30, help='dimension of the latent space')
+
         self.parser.add_argument('--is_sparse', action='store_true', default=True)
         self.parser.add_argument('--has_temperature', action='store_true', default=True)
         self.parser.add_argument('--has_dictionary', action='store_true', default=True)
@@ -64,6 +76,7 @@ class Options():
         self.parser.add_argument('--dec_h1_dim', type=int, default=100, help='dimension of the first hl of the dec')
         self.parser.add_argument('--dec_h2_dim', type=int, default=2000, help='dimension of the second hl of the dec')
         self.parser.add_argument('--cw_inner_dimension', type=int, default=40, help='inner dimension of the product CW')
+        self.parser.add_argument('--var_rec', type=float, default=1.0)
 
         #Sparsity parameters
         self.parser.add_argument('--nb_patterns', type=int, default=4, help='nb of times S is repeated')
